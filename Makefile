@@ -24,6 +24,18 @@ TARGETS := universal
 BUILDER ?= kamado-hostnet
 KAMADO_SRC ?= ../KamadoPool
 
+# Where the Dockerfile takes Kamado's source from. `git` clones the
+# commit pinned in the manifest and is what a build box uses, since it
+# needs no sibling checkout. `local` uses ./kamado-src, rsynced from
+# KAMADO_SRC below, so uncommitted edits are picked up:
+#
+#     KAMADO_SOURCE=local make
+#
+# Always exported, so the manifest's `{ env: 'KAMADO_SOURCE' }` build
+# arg resolves even when the caller sets nothing.
+KAMADO_SOURCE ?= git
+export KAMADO_SOURCE
+
 # Source files whose changes should trigger a re-sync + repack (excludes
 # node_modules/dist build artifacts).
 KAMADO_DEPS := $(shell find "$(KAMADO_SRC)/api" "$(KAMADO_SRC)/ui" "$(KAMADO_SRC)/ckpool" \
@@ -36,11 +48,17 @@ endif
 # overrides to s9pk.mk must precede the include statement
 include node_modules/@start9labs/start-sdk/s9pk.mk
 
+# Only needed for KAMADO_SOURCE=local; in the default `git` mode the
+# Dockerfile clones the pinned commit and this tree is never read.
 kamado-src: $(KAMADO_DEPS)
-	@test -d "$(KAMADO_SRC)/api" || { echo "Error: KamadoPool source not found at '$(KAMADO_SRC)'. Set KAMADO_SRC=/path/to/KamadoPool"; exit 1; }
+ifeq ($(KAMADO_SOURCE),local)
+	@test -d "$(KAMADO_SRC)/api" || { echo "Error: KamadoPool source not found at '$(KAMADO_SRC)'. Set KAMADO_SRC=/path/to/KamadoPool, or drop KAMADO_SOURCE=local to build the pinned commit"; exit 1; }
 	@echo "   Syncing KamadoPool source from '$(KAMADO_SRC)'..."
 	@rsync -a --delete --exclude node_modules --exclude dist \
 		"$(KAMADO_SRC)/api" "$(KAMADO_SRC)/ui" "$(KAMADO_SRC)/ckpool" kamado-src/
+else
+	@mkdir -p kamado-src
+endif
 	@touch kamado-src
 
 # Extra prerequisites for the pack targets defined in s9pk.mk: the Docker
@@ -67,7 +85,14 @@ setup:
 	docker buildx inspect --bootstrap $(BUILDER)
 	@echo "Ready. 'make' will now build the universal package."
 
+# Build from the sibling checkout, uncommitted changes included. Not
+# reproducible, so never ship the result: releases build the pinned
+# commit via a plain `make`.
+dev:
+	@$(MAKE) --no-print-directory KAMADO_SOURCE=local $(BASE_NAME).s9pk
+	@echo "   Built from $(KAMADO_SRC), NOT from the pinned commit. Do not publish this package."
+
 clean-src:
 	rm -rf kamado-src
 
-.PHONY: clean-src setup
+.PHONY: clean-src setup dev
